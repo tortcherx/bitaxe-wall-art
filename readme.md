@@ -229,6 +229,7 @@ chmod +x ~/test-display.sh
 
    ```bash
    nano server.js
+  ```
 
    Add the following:
    ```
@@ -1670,3 +1671,263 @@ app.listen(PORT, () => {
   logger.info(`Bitaxe API Gateway started on port ${PORT}`);
   console.log(`Bitaxe API Gateway started on port ${PORT}`);
 });
+EOL
+   ```
+
+6. Set up systemd service for auto-start:
+   ```bash
+   sudo nano /etc/systemd/system/bitaxe-api.service
+   ```
+   
+   Add the following:
+   ```
+   [Unit]
+   Description=Bitaxe API Gateway
+   After=network.target
+
+   [Service]
+   Type=simple
+   User=opennode
+   WorkingDirectory=/home/opennode/bitaxe-api-gateway
+   ExecStart=/usr/bin/node server.js
+   Restart=on-failure
+   Environment=NODE_ENV=production
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+
+7. Enable and start the service:
+   ```bash
+   sudo systemctl enable bitaxe-api
+   sudo systemctl start bitaxe-api
+   ```
+
+## 5. Command-Line Dashboard
+
+### Simple Dashboard Script
+```bash
+# Create a dashboard script
+cat > ~/bitaxe-dashboard.sh << 'EOF'
+#!/bin/bash
+
+# Main dashboard display loop
+while true; do
+  # Clear screen and show header
+  clear
+  echo -e "\e[1;36m==============================\e[0m"
+  echo -e "\e[1;33m      BITAXE MONITOR      \e[0m"
+  echo -e "\e[1;36m==============================\e[0m"
+  
+  # Display time and system info
+  echo -e "$(date '+%Y-%m-%d %H:%M:%S')"
+  echo -e "\e[1;37mSystem: $(hostname)\e[0m"
+  echo -e "CPU: $(vcgencmd measure_temp | cut -d'=' -f2)"
+  echo -e "Load:$(uptime | awk -F'load average:' '{print $2}')"
+  echo -e "Mem: $(free -h | awk '/^Mem:/ {print $3 "/" $2}')"
+  echo -e "\e[1;36m------------------------------\e[0m"
+  
+  # Get API data with error handling
+  API_DATA=$(curl -s --connect-timeout 5 http://localhost:3000/api/monitor)
+  
+  if [ -z "$API_DATA" ]; then
+    echo -e "\e[1;31mCannot connect to API server\e[0m"
+    echo -e "Make sure server.js is running"
+    sleep 10
+    continue
+  fi
+  
+  # Parse API data safely
+  ONLINE_COUNT=$(echo "$API_DATA" | jq -r '.bitaxes | map(select(.status == "online")) | length')
+  TOTAL_COUNT=$(echo "$API_DATA" | jq -r '.bitaxes | length')
+  OVERHEAT_COUNT=$(echo "$API_DATA" | jq -r '.bitaxes | map(select(.overheat_mode == 1)) | length')
+  TOTAL_HASHRATE=$(echo "$API_DATA" | jq -r '.bitaxes | map(select(.status == "online")) | map(.hashRate) | add')
+  AVG_HASHRATE=$(echo "$API_DATA" | jq -r '.bitaxes | map(select(.status == "online")) | map(.hashRate) | add / length')
+  AVG_TEMP=$(echo "$API_DATA" | jq -r '.bitaxes | map(select(.status == "online")) | map(.temperature) | add / length')
+  TOTAL_ACCEPTED=$(echo "$API_DATA" | jq -r '.bitaxes | map(.sharesAccepted) | add')
+  TOTAL_REJECTED=$(echo "$API_DATA" | jq -r '.bitaxes | map(.sharesRejected) | add')
+  
+  # Display mining summary
+  echo -e "\e[1;35mMINING SUMMARY\e[0m"
+  echo -e "Bitaxes: \e[1;32m$ONLINE_COUNT\e[0m/$TOTAL_COUNT online"
+  
+  # Display overheat status
+  if [ "$OVERHEAT_COUNT" -gt 0 ]; then
+    echo -e "Overheated: \e[1;31m$OVERHEAT_COUNT ALERT!\e[0m"
+  else
+    echo -e "Overheated: \e[1;32mNone\e[0m"
+  fi
+  
+  # Format and display hashrates
+  echo -e "Total Hash: \e[1;33m$(printf "%.2f GH/s" $TOTAL_HASHRATE)\e[0m"
+  echo -e "Avg Hash: $(printf "%.2f GH/s" $AVG_HASHRATE)"
+  
+  # Format and display temperature with color
+  TEMP_COLOR="\e[1;32m"
+  if [ $(echo "$AVG_TEMP > 75" | bc) -eq 1 ]; then
+    TEMP_COLOR="\e[1;31m"
+  elif [ $(echo "$AVG_TEMP > 65" | bc) -eq 1 ]; then
+    TEMP_COLOR="\e[1;33m"
+  fi
+  echo -e "Avg Temp: ${TEMP_COLOR}$(printf "%.1f°C" $AVG_TEMP)\e[0m"
+  
+  # Display shares
+  echo -e "Shares: +$TOTAL_ACCEPTED/-$TOTAL_REJECTED"
+  echo -e "\e[1;36m------------------------------\e[0m"
+  
+  # Display last updated time
+  echo -e "Updated: $(date '+%H:%M:%S')"
+  
+  # Refresh every 30 seconds
+  sleep 30
+done
+EOF
+
+# Make it executable
+chmod +x ~/bitaxe-dashboard.sh
+```
+
+### Autostarting the Dashboard
+```bash
+# Create a systemd service for the dashboard
+sudo bash -c 'cat > /etc/systemd/system/bitaxe-dashboard.service << EOF
+[Unit]
+Description=Bitaxe Command Line Dashboard
+After=bitaxe-api.service
+
+[Service]
+Type=simple
+User='$USER'
+ExecStart=/home/'$USER'/bitaxe-dashboard.sh
+Restart=on-failure
+StandardOutput=tty
+TTYPath=/dev/tty1
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+# Enable and start the service
+sudo systemctl enable bitaxe-dashboard.service
+sudo systemctl start bitaxe-dashboard.service
+```
+
+## 6. Remote Access
+
+### Securing Remote Access
+```bash
+# Generate SSH key pair on your local machine (if needed)
+# ssh-keygen -t ed25519 -C "bitaxe-monitor"
+
+# Copy your public key to the Raspberry Pi (run on local machine)
+# ssh-copy-id username@your-pi-ip-address
+
+# Disable password authentication for SSH (optional)
+sudo nano /etc/ssh/sshd_config
+# Set: PasswordAuthentication no
+# Set: ChallengeResponseAuthentication no
+# Set: UsePAM no
+
+# Restart SSH service
+sudo systemctl restart sshd
+```
+
+### Setting Up Cloudflare Tunnel (Optional)
+```bash
+# Install Cloudflared
+curl -L --output cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb
+sudo dpkg -i cloudflared.deb
+
+# Authenticate with Cloudflare (follow the prompts)
+cloudflared tunnel login
+
+# Create a tunnel
+cloudflared tunnel create bitaxe-monitor
+
+# Configure the tunnel
+mkdir -p ~/.cloudflared
+TUNNEL_ID=$(cloudflared tunnel list | grep bitaxe-monitor | awk '{print $1}')
+
+cat > ~/.cloudflared/config.yml << EOF
+tunnel: ${TUNNEL_ID}
+credentials-file: /home/$USER/.cloudflared/${TUNNEL_ID}.json
+
+ingress:
+  - hostname: YOUR_SUBDOMAIN.YOUR_DOMAIN.co
+    service: http://localhost:3000
+  - service: http_status:404
+EOF
+
+# Set up DNS routing
+cloudflared tunnel route dns ${TUNNEL_ID} YOUR_SUBDOMAIN.YOUR_DOMAIN.co
+
+# Install as a service
+sudo cloudflared service install
+
+# Start the service
+sudo systemctl start cloudflared
+```
+
+## 7. Maintenance
+
+### Automated Updates
+```bash
+# Create update script
+cat > ~/update.sh << 'EOF'
+#!/bin/bash
+
+echo "Starting system update..."
+sudo apt update
+sudo apt upgrade -y
+sudo apt autoremove -y
+
+echo "Updating Bitaxe API..."
+cd ~/bitaxe-api-gateway
+git pull
+npm install
+
+echo "Restarting services..."
+sudo systemctl restart bitaxe-api.service
+sudo systemctl restart bitaxe-dashboard.service
+
+echo "Update completed successfully!"
+EOF
+
+# Make it executable
+chmod +x ~/update.sh
+
+# Schedule weekly updates
+(crontab -l 2>/dev/null; echo "0 2 * * 0 /home/$USER/update.sh >> /home/$USER/update.log 2>&1") | crontab -
+```
+
+### Monitoring Health
+```bash
+# Create health check script
+cat > ~/health-check.sh << 'EOF'
+#!/bin/bash
+
+# Check if API server is running
+if ! curl -s http://localhost:3000/health > /dev/null; then
+  echo "API server is down, restarting..."
+  sudo systemctl restart bitaxe-api.service
+fi
+
+# Check system temperature
+temp=$(vcgencmd measure_temp | cut -d'=' -f2 | cut -d"'" -f1)
+if (( $(echo "$temp > 80" | bc -l) )); then
+  echo "System temperature is high: ${temp}°C"
+fi
+
+# Check disk space
+disk_usage=$(df -h / | awk 'NR==2 {print $5}' | sed 's/%//')
+if [ "$disk_usage" -gt 90 ]; then
+  echo "Disk space is low: ${disk_usage}%"
+fi
+EOF
+
+# Make it executable
+chmod +x ~/health-check.sh
+
+# Schedule hourly health checks
+(crontab -l 2>/dev/null; echo "0 * * * * /home/$USER/health-check.sh >> /home/$USER/health.log 2>&1") | crontab -
+```
